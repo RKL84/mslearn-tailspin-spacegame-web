@@ -1,65 +1,227 @@
+# Create a multistage pipeline with Azure DevOps
 
-# Contributing
 
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.microsoft.com.
+You can use an Azure DevOps multistage pipeline to divide your CI/CD process into stages that represent different parts of your development cycle. 
+Using a multistage pipeline gives you more visibility into your deployment process and makes it easier to integrate [approvals and checks](approvals.md). 
 
-When you submit a pull request, a CLA-bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., label, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
+In this article, you'll build a YAML pipeline with three stages: 
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+1. Build: build the source code and produce a package
+2. Dev: deploy your package to a development site for testing
+3. Staging: deploy to a staging Azure App Service instance a [manual approval check](approvals.md)
 
-## For maintainers: Updating feature branches
+In a real-world scenario, you may have another stage for deploying to production depending on your DevOps process. 
 
-This repository uses feature branches to associate code with specific modules on Microsoft Learn. Any changes you make to the default branch will likely need to be propagated to each feature branch in this repo. A common example is when we need to update Node packages in `package.json`.
+The example code in this exercise is for a .NET web application for a pretend space game that includes a leaderboard to show high scores. You'll deploy to both development and staging instances of Azure Web App for Linux. 
 
-Here's one way to update the remote feature branches when you make a change to the default branch. Note that this process deletes all local branches except for `main`.
+## 1 - Create the App Service environments
 
-```bash
-# Synchronize with the remote main branch
-git checkout main
-git pull origin main
-# Delete all local branches except for main
-git branch | grep -ve "main" | xargs git branch -D
-# List all remote branches except for main
-branches=$(git branch -r 2> /dev/null | grep -ve "main" | cut -d "/" -f 2)
-# Synchronize each branch with main and push the result
-while IFS= read -r branch; do
-    # Fetch and switch to feature branch
-    git fetch origin $branch
-    git checkout $branch
-    # Ensure local environment is free of extra files
-    git clean -xdf
-    # Merge down main
-    git merge --no-ff main
-    # Break out if merge failed
-    if [ $? -ne 0 ]; then
-        break
-    fi
-    # Push update
-    git push origin $branch
-done <<< "$branches"
-# Switch back to main
-git checkout main
+Before you can deploy your pipeline, you need to first create an App Service environment to deploy to. You'll use Azure CLI to create the environment. 
+
+1. Go to [Azure portal](https://portal.azure.com) and sign in.  
+
+1. From the menu, select **Cloud Shell** and the **Bash** experience.
+
+1. Generate a random number that makes your web app's domain name unique.
+
+    ```code
+    webappsuffix=$RANDOM    
+    ```
+
+1. Use a `az group create` command to create a resource group named *tailspin-space-game-rg* that contains all of your App Service instances. Update the `location` value to use your closest region. 
+    
+    ```azurecli
+    az group create --location eastus --name tailspin-space-game-rg
+    ```
+
+1. Create an App Service plan.
+
+    ```azurecli
+    az appservice plan create \
+      --name tailspin-space-game-asp \
+      --resource-group tailspin-space-game-rg \
+      --sku B1 \
+      --is-linux
+    ```
+
+1. Create two App Service instances, one for each environment (Dev and Staging) with the `az webapp create` command. 
+
+    ```azurecli
+    az webapp create \
+      --name tailspin-space-game-web-dev-$webappsuffix \
+      --resource-group tailspin-space-game-rg \
+      --plan tailspin-space-game-asp \
+      --runtime "DOTNET|6.0"
+    
+    az webapp create \
+      --name tailspin-space-game-web-staging-$webappsuffix \
+      --resource-group tailspin-space-game-rg \
+      --plan tailspin-space-game-asp \
+      --runtime "DOTNET|6.0"
+    ```
+
+1. List both App Service instances to verify that they're running with the `az webapp list` command. 
+
+    ```azurecli
+    az webapp list \
+      --resource-group tailspin-space-game-rg \
+      --query "[].{hostName: defaultHostName, state: state}" \
+      --output table
+    ```
+
+1. Copy the names of the App Service instances to use as variables in the next section. 
+
+## 2 - Create your Azure DevOps project and variables
+
+Set up your Azure DevOps project and a build pipeline. You'll also add variables for your development and staging environments. 
+
+Your build pipeline:
+
+* Includes a trigger that runs when there's a code change to branch
+* Defines two variables, `buildConfiguration` and `releaseBranchName`
+* Includes a stage named Build that builds the web application
+* Publishes an artifact you'll use in a later stage
+
+### Add a build pipeline 
+
+1. Sign-in to your Azure DevOps organization and go to your project.
+
+1. Go to **Pipelines**, and then select **New pipeline**.
+
+1. Do the steps of the wizard by first selecting **GitHub** as the location of your source code.
+
+1. You might be redirected to GitHub to sign in. If so, enter your GitHub credentials.
+
+1. When you see the list of repositories, select your repository.
+
+1. You might be redirected to GitHub to install the Azure Pipelines app. If so, select **Approve & install**.
+
+7. When the **Configure** tab appears, select **Starter pipeline**.
+
+8. Replace the contents of *azure-pipelines.yml* with this code. 
+
+      :::code language="yml" source="~/../snippets/pipelines/multistage/multistage-example.yml" range="1-67":::
+
+9. When you're ready, select **Save and run**.
+
+### Add environment variables
+
+1. In Azure DevOps, go to **Pipelines** > **Library**. 
+
+1. Select **+ Variable group**.
+
+1. Under **Properties**, add *Release* for the variable group name.
+
+1. Create a two variables to refer to your development and staging host names. Replace the value `1234` with the correct value for your environment. 
+
+    
+    |Variable name  |Example value  |
+    |---------|---------|
+    |WebAppNameDev     |    tailspin-space-game-web-dev-1234     |
+    |WebAppNameStaging     |    tailspin-space-game-web-staging-1234     |
+    
+ 
+1. Select **Save** to save your variables. 
+
+
+## 3 - Add the Dev stage
+
+Next, you'll update your pipeline to promote your build to the *Dev* stage. 
+
+1. In Azure Pipelines, go to **Pipelines** > **Pipelines**. 
+
+1.  Select **Edit** in the contextual menu to edit your pipeline. 
+
+    :::image type="content" source="media/mutistage-pipeline/multistage-pipeline-edit-contextual-menu.png" alt-text="Screenshot of select Edit menu item. ":::
+    
+1. Update *azure-pipelines.yml* to include a Dev stage. In the Dev stage, your pipeline will:
+
+    * Run when the Build stage succeeds because of a condition
+    * Download an artifact from `drop`
+    * Deploy to Azure App Service with an [Azure Resource Manager service connection](../library/service-endpoints.md)
+
+        :::code language="yml" source="~/../snippets/pipelines/multistage/multistage-example.yml" range="1-92" highlight="69-92":::
+
+1. Change the `AzureWebApp@1` task to use your subscription. 
+
+    1. Select **Settings** for the task. 
+
+        :::image type="content" source="media/mutistage-pipeline/select-settings-azurewebapptask.png" alt-text="Screenshot of settings option in YAML editor task. ":::
+
+    1. Update the `your-subscription` value for **Azure Subscription** to use your own subscription. You may need to authorize access as part of this process. If you run into a problem authorizing your resource within the YAML editor, an alternate approach is to [create a service connection](../library/service-endpoints.md#create-a-service-connection). 
+    
+        :::image type="content" source="media/mutistage-pipeline/edit-your-subscription-value.png" alt-text="Screenshot of Azure subscription menu item. ":::
+
+    1. Set the **App type** to Web App on Linux. 
+    
+    1. Select **Add** to update the task. 
+
+1. Save and run your pipeline. 
+
+1. Verify that your app deployed by going to https://tailspin-space-game-web-dev-1234.azurewebsites.net in your browser. Substitute `1234` with the unique value for your site. 
+
+## 4 - Add the Staging stage 
+
+Last, you'll promote the Dev stage to Staging. Unlike the Dev environment, you want to have more control in the staging environment you'll add a manual approval. 
+
+
+### Create staging environment
+
+1. From Azure Pipelines, select **Environments**.
+
+1. Select **New environment**.
+
+1. Create a new environment with the name *staging* and **Resource** set to *None*. 
+
+1. On the staging environment page, select **Approvals and checks**.
+
+    :::image type="content" source="media/mutistage-pipeline/pipeline-add-check-to-environment.png" alt-text="Screenshot of approvals and checks menu option. ":::
+
+1. Select **Approvals**. 
+
+1. In **Approvers**, select **Add users and groups**, and then select your account.
+
+1. In **Instructions to approvers**, write  *Approve this change when it's ready for staging*.
+
+1. Select **Save**. 
+
+### Add new stage to pipeline
+
+You'll add new stage, `Staging` to the pipeline that includes a manual approval. 
+
+1. Edit your pipeline file and add the `Staging` section.  
+
+    :::code language="yml" source="~/../snippets/pipelines/multistage/multistage-example.yml" range="1-116" highlight="94-116":::
+
+1. Change the `AzureWebApp@1` task in the Staging stage to use your subscription. 
+
+    1. Select **Settings** for the task. 
+
+        :::image type="content" source="media/mutistage-pipeline/select-settings-azurewebapptask.png" alt-text="Screenshot of settings option in YAML editor task. ":::
+
+    1. Update the `your-subscription` value for **Azure Subscription** to use your own subscription. You may need to authorize access as part of this process. 
+    
+        :::image type="content" source="media/mutistage-pipeline/edit-your-subscription-value.png" alt-text="Screenshot of Azure subscription menu item. ":::
+
+    1. Set the **App type** to Web App on Linux. 
+    
+    1. Select **Add** to update the task. 
+
+1.  Go to the pipeline run. Watch the build as it runs. When it reaches `Staging`, the pipeline waits for manual release approval. You'll also receive an email that you have a pipeline pending approval. 
+
+    :::image type="content" source="media/mutistage-pipeline/pipeline-wait-approval.png" alt-text="Screenshot of wait for pipeline approval.":::
+
+1. Review the approval and allow the pipeline to run. 
+ 
+    :::image type="content" source="media/mutistage-pipeline/pipeline-check-manual-validation.png" alt-text="Screenshot of manual validation check.":::
+    
+1. Verify that your app deployed by going to https://tailspin-space-game-web-staging-1234.azurewebsites.net in your browser. Substitute `1234` with the unique value for your site. 
+
+
+## Clean up
+
+Delete the resource group that you used, *tailspin-space-game-rg*,  with the `az group delete` command.
+
+```azurecli
+az group delete --name tailspin-space-game-rg
 ```
-
-# Legal Notices
-
-Microsoft and any contributors grant you a license to the Microsoft documentation and other content
-in this repository under the [Creative Commons Attribution 4.0 International Public License](https://creativecommons.org/licenses/by/4.0/legalcode),
-see the [LICENSE](LICENSE) file, and grant you a license to any code in the repository under the [MIT License](https://opensource.org/licenses/MIT), see the
-[LICENSE-CODE](LICENSE-CODE) file.
-
-Microsoft, Windows, Microsoft Azure and/or other Microsoft products and services referenced in the documentation
-may be either trademarks or registered trademarks of Microsoft in the United States and/or other countries.
-The licenses for this project do not grant you rights to use any Microsoft names, logos, or trademarks.
-Microsoft's general trademark guidelines can be found at http://go.microsoft.com/fwlink/?LinkID=254653.
-
-Privacy information can be found at https://privacy.microsoft.com/en-us/
-
-Microsoft and any contributors reserve all other rights, whether under their respective copyrights, patents,
-or trademarks, whether by implication, estoppel or otherwise.
