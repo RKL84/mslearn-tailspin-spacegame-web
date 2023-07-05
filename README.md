@@ -1,3 +1,7 @@
+# Reference 
+https://learn.microsoft.com/en-us/training/paths/az-400-define-implement-continuous-integration/
+https://learn.microsoft.com/en-us/training/modules/create-multi-stage-pipeline/
+
 # Create a multistage pipeline with Azure DevOps
 
 
